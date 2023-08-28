@@ -1,0 +1,86 @@
+data {
+    int<lower=1> T;               // Full sample size
+    int<lower=1> M;               // Number of variables
+    int<lower=1> p;               // Lag order
+    matrix[T,M] x;                // Data matrix
+    vector[T] z;                  // Regime-switching variable
+    real upper_c;                 // Upper bound for prior on c
+    real lower_c;                 // Lower bound for prior on c
+    real<lower = M-1> nu;         // Degrees of freedom for inverse Wishart prior
+    
+}
+
+transformed data {
+    matrix[T-p, M*p] X;     // Matrix of lagged variables from t = 1 to t = T-p
+    
+    int<lower=1> K;         // Number of parameters in each equation,
+                            // exluding intercept
+                            
+    vector[T] z_t;            // Transformed regime-
+    switching variable
+    real <lower = 0> sigma_z; // Standard deviation of z_t
+    
+    matrix[M,M] ident;        // Identity matrix for inverse Wishart prior
+    
+    for(j in 1:p)
+        X[,(M*(j-1)+1):((M*(j-1)+1)+M-1)] = block(x, p-j+1, 1, T-p, M);
+    
+    K = M * p;
+      
+    for(i in 1:T)
+      z_t[i] = z[i];          // Can be changed so that e.g. z_t[i] = z[i + 1]
+    
+    sigma_z = sd(z);
+    
+    for(i in 1:M){
+      for(j in 1:M) {
+          ident[i,j] = 0;
+      }
+    }
+    
+    for(i in 1:M) {
+      ident[i,i] = 1;
+  }
+  
+}
+
+parameters {
+  
+    matrix[M, K] phi_matrix;   // Matrix of parameters, lower regime
+    matrix[M, K] phi_matrix_z; // Matrix of parameters, upper regime
+    
+    vector[M] mu;              // Intercept, lower regime
+    vector[M] mu_z;            // Intercept, upper regime
+    
+    cov_matrix[M] Sigma;       // Covariance matrix of the system
+    real <lower = 0> h;        // Shrinkage hyper-parameter
+    
+    // Regime-switching parameters of G(z_t)
+    real<lower = 0> gamma;                        
+    real<lower = lower_c, upper = upper_c> c_reg;
+    
+}
+
+model {
+  
+    h ~ inv_gamma(3,2);
+    
+    to_vector(phi_matrix) ~ normal(0, h*1); 
+    to_vector(phi_matrix_z) ~ normal(0, h*1);
+    
+    to_vector(mu) ~ normal(0, 10);
+    to_vector(mu_z) ~ normal(0, 10);
+         
+    Sigma ~ inv_wishart(nu, ident);
+        
+    gamma ~ gamma(1, 0.001);
+    c_reg ~ uniform(lower_c, upper_c);
+    
+    for(i in 1:(T-p)){
+      x[i+p,] ~ multi_normal(
+        (phi_matrix * X[i,]' + mu) + 
+        (inv(1 + exp(-gamma*(z_t[i+p] - c_reg)/sigma_z))*
+        (phi_matrix_z * X[i,]' + mu)), 
+        Sigma);
+    }
+}
