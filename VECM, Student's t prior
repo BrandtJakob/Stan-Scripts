@@ -1,0 +1,100 @@
+data {
+    int<lower=1> T;               // Full sample size
+    int<lower=1> M;               // Number of variables
+    int<lower=1> p;               // Lag order
+    matrix[T,M] x;                // Data matrix
+    int <lower = 0, upper = M> r; // Number of cointegrating vectors
+    real<lower = M-1> nu;         // Degrees of freedom for inverse Wishart prior
+}
+
+transformed data {
+    matrix[T-p-1, M] x_first_lag; // Matrix of x_{t-1}
+    matrix[T-p, M*p] x_lag;       // Matrix of lagged variables 
+                                     from t = 1 to t = T-p
+    matrix[T-p-1, M*p] x_lag_diff;// Matrix of lagged differences 
+                                     with respect to x_lag
+    matrix[T-p, M] x_lhs;         // Matrix of inversily lagged variables
+    matrix[T-p-1, M] x_lhs_diff;  // Matrix of lagged differences 
+                                     with respect to x_lhs
+    matrix[M,M] cov_mat;          // Identity matrix for inverse Wishart prior
+    matrix[r,r] I_r;              // Identity matrix of dimension r
+    
+    for(k in 1:(T-p-1))
+        x_first_lag[k,] = x[k+p,];
+    
+    for(j in 1:p)
+        x_lag[,(M*(j-1)+1):(M*(j-1)+M)] = block(x, p-j+1, 1, T-p, M);
+        
+    for(l in 1:(T-p-1))                                                          
+    x_lag_diff[l,] = x_lag[l+1] - x_lag[l];
+    
+    x_lhs = block(x, (p+1), 1, T-p, M);
+    
+    for(m in 1:(T-p-1))
+    x_lhs_diff[m,] = x_lhs[m+1] - x_lhs[m];
+    
+    for(i in 1:r)
+      for(j in 1:r)
+        I_r[i,j] = 0;
+    
+    for(i in 1:r)
+      I_r[i,i] = 1;
+      
+    for(i in 1:M){
+      for(j in 1:M){
+      cov_mat[i,j] = 0;
+      }
+    }
+    
+    for(i in 1:M){
+      cov_mat[i,i] = 1;
+    }
+}
+
+parameters {
+    matrix[M, M] phi_matrix;  // Matrix of parameters, excluding intercept
+    
+    cov_matrix[M] Sigma;      // Covariance matrix of error terms
+    vector[M] mu;             // Intercept
+                                   
+    matrix[M, r] alpha;       // Matrix containing short-run coefficients
+    
+    // Lower part of the linearly normalized beta matrix
+    matrix[M-r, r] N_1;
+    matrix[r, r] N_2;
+    
+    real<lower = 0> h;          // Shrinkage hyper-parameter for Phi
+    real<lower = 0> eta;        // Shrinkage hyper-parameter for alpha
+
+}
+
+transformed parameters {
+  
+  matrix[M,r] beta_nu;   // Linearly normalized beta matrix
+   
+  beta_nu = append_row(I_r, N_1 / N_2);
+   
+}
+
+model {
+  
+    h ~ inv_gamma(3,2);
+    eta ~ inv_gamma(3,2);
+    
+    to_vector(N_1) ~ normal(0, 1);
+    to_vector(N_2) ~ normal(0, 1);
+
+    to_vector(phi_matrix) ~ normal(0, h*1);
+    
+    mu ~ normal(0, 10);
+         
+    Sigma ~ inv_wishart(nu, cov_mat);
+    
+    to_vector(alpha) ~ normal(0, eta*1);
+        
+    for(n in 1:(T-p-1)) {
+      target+= multi_normal_lpdf(x_lhs_diff[n,] | ((alpha * 
+      beta_nu' * x_first_lag[n,]') + (mu + phi_matrix * 
+      x_lag_diff[n,]')), Sigma);
+    }
+}
