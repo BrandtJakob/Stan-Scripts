@@ -1,0 +1,176 @@
+data {
+    int <lower=1> T;                // Full sample size
+    int <lower=1> M;                // Number of covariates in x
+    matrix[T,M] x;                  // Data matrix
+    int <lower=1> p;                // Lag order
+    int <lower = 0, upper = M> r_1; // Number of cointegrating vectors, 
+                                       lower regime
+    int <lower = 0, upper = M> r_2; // Number of cointegrating vectors, 
+                                       upper regime
+    vector[T] z;                    // Regime-switching variable
+    real<lower = M-1> nu;           // Degrees of freddom for inverse Wishart prior
+    real upper_c;                   // Upper bound for prior on c
+    real lower_c;                   // Lower bound for prior on c
+}
+
+transformed data {
+    matrix[T-p-1, M] x_first_lag; // Matrix of x_{t-1}
+    matrix[T-p, M*p] x_lag;       // Matrix of lagged variables 
+                                     from t = 1 to t = T-p
+    matrix[T-p-1, M*p] x_lag_diff;// Matrix of lagged differences 
+                                     with respect to x_lag
+    matrix[T-p, M] x_lhs;         // Matrix of inversely lagged variables
+    matrix[T-p-1, M] x_lhs_diff;  // Matrix of lagged differences with 
+                                     respect to x_lhs
+    matrix[r_1,r_1] I_r_1;
+    matrix[r_2,r_2] I_r_2;
+    
+    real <lower = 0> sigma_z;
+    vector[T] z_t;
+    matrix[M,M] cov_mat;
+    
+    for(k in 1:(T-p-1))
+        x_first_lag[k,] = x[k+p,];
+    
+    for(j in 1:p)
+        x_lag[,(M*(j-1)+1):(M*(j-1)+M)] = block(x, p-j+1, 1, T-p, M);
+        
+    for(l in 1:(T-p-1))                                                          
+    x_lag_diff[l,] = x_lag[l+1] - x_lag[l];
+    
+    x_lhs = block(x, (p+1), 1, T-p, M);
+    
+    for(m in 1:(T-p-1))
+    x_lhs_diff[m,] = x_lhs[m+1] - x_lhs[m];
+    
+    for(i in 1:T)
+      z_t[i] = z[i];
+    
+    sigma_z = sd(z);
+    
+    for(i in 1:M){
+      for(j in 1:M) {
+          cov_mat[i,j] = 0;
+      }
+    }
+    
+    for(i in 1:M) {
+      cov_mat[i,i] = 1;
+  }
+  
+    for(i in 1:r_1) {
+      for(j in 1:r_1) {
+        I_r_1[i,j] = 0;
+      }
+    }
+    
+     for(i in 1:r_2) {
+      for(j in 1:r_2) {
+        I_r_2[i,j] = 0;
+      }
+    }
+    
+    for(i in 1:r_1) {
+        I_r_1[i,i] = 1;
+    }
+    
+    for(i in 1:r_2) {
+        I_r_2[i,i] = 1;
+    }
+    
+    
+}
+
+parameters {
+    // Lower regime
+    matrix[M, M] phi_matrix;  // Matrix of parameters, excluding intercept 
+    vector[M] mu;             // Intercept
+   
+    // Upper regime
+    matrix[M, M] phi_matrix_z; // Matrix of parameters, excluding intercept 
+    vector[M] mu_z;            // Intercept
+    
+    cov_matrix[M] Sigma;       // Covariance matrix of error terms
+    
+    matrix[M,r_1] alpha;       // Short run coefficients, lower regime
+    matrix[M,r_2] alpha_z;     // Short run coefficients, upper regime
+    
+    // Lower part of the linearly normalized beta matrix, both regimes
+    matrix[M-r_1, r_1] N_1;     
+    matrix[M-r_2, r_2] N_1_z;
+    matrix[r_1, r_1] N_2;
+    matrix[r_2, r_2] N_2_z;
+    
+    // Regime-switching parameters
+    real<lower = 0> gamma;
+    real<lower = lower_c, upper = upper_c> c;
+    
+    // Shrinkage parameters, lower regime
+    real<lower = 0> h;        // For phi
+    real<lower = 0> eta;      // For alpha
+    
+    // Shrinkage parameters, upper regime
+    real<lower = 0> h_z;      // For phi_z
+    real<lower = 0> eta_z;    // For alpha_z
+}
+
+transformed parameters {
+    matrix[M,r_1] beta_nu;
+    matrix[M,r_2] beta_nu_z;
+  
+    beta_nu = append_row(I_r_1, N_1 / N_2);
+    beta_nu_z = append_row(I_r_2, N_1_z / N_2_z);
+}
+
+model {
+  vector[M] A;
+  vector[M] B;
+  real F;
+  vector[M] C;
+  
+  h ~ inv_gamma(3,2);
+  eta ~ inv_gamma(3,2);
+  
+  h_z ~ inv_gamma(3,2);
+  eta_z ~ inv_gamma(3,2);
+  
+  to_vector(N_1) ~ normal(0, 1);
+  to_vector(N_1_z) ~ normal(0, 1);
+  to_vector(N_2) ~ normal(0, 1);
+  to_vector(N_2_z) ~ normal(0, 1);
+ 
+  Sigma ~ inv_wishart(nu, cov_mat);  // Prior for covariance matrix
+  
+  to_vector(mu) ~ normal(0, 1);
+
+  to_vector(phi_matrix) ~ normal(0, h*1);
+
+  to_vector(phi_matrix_z) ~ normal(0, h_z*1);
+      
+  to_vector(mu_z) ~ normal(0, 1);
+  
+  to_vector(alpha) ~ normal(0, eta*1);
+
+  to_vector(alpha_z) ~ normal(0, eta_z*1);
+
+  gamma ~ gamma(1, 0.001);
+  
+  c ~ uniform(lower_c, upper_c);
+
+    for(n in 1:(T-p-1)) {
+
+        A = ((alpha * beta_nu' * x_first_lag[n,]') + (mu + 
+        phi_matrix * x_lag_diff[n,]'));
+
+        F = (1/(1 + exp(-gamma*(z_t[n] - c)/sigma_z)));
+        
+        B = ((alpha_z * beta_nu_z' * x_first_lag[n,]') + (mu_z + 
+        phi_matrix_z * x_lag_diff[n,]'));
+        
+        C = A + F*B;
+        
+        target += multi_normal_lpdf(x_lhs_diff[n,] | C, Sigma);
+        
+      }
+    
+}
